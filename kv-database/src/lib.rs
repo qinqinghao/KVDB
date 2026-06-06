@@ -33,8 +33,13 @@
 pub mod cache;
 pub mod db;
 pub mod error;
+pub mod lru;
+pub mod server;
 pub mod storage;
+pub mod transaction;
 pub mod types;
 
 pub use crate::db::KvStore;
 pub use crate::error::{Error, Result};
+pub use crate::server::TcpServer;
+pub use crate::transaction::Transaction;

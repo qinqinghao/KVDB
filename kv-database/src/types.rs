@@ -35,3 +35,16 @@ impl Entry {
 
 /// 数据库中的所有条目
 pub type Store = HashMap<String, Entry>;
+
+/// 数据库统计信息
+#[derive(Debug, Clone)]
+pub struct StoreInfo {
+    /// 有效键数量（未过期）
+    pub key_count: usize,
+    /// 总条目数量（含已过期但未清理的）
+    pub total_entries: usize,
+    /// 最大容量（None 表示无限制）
+    pub capacity: Option<usize>,
+    /// 持久化文件路径
+    pub file_path: String,
+}

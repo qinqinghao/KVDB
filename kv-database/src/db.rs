@@ -3,6 +3,8 @@
 use crate::cache::Cache;
 use crate::error::{Error, Result};
 use crate::storage::{load_from_file, save_to_file};
+use crate::transaction::Transaction;
+use crate::types::StoreInfo;
 use serde::de::DeserializeOwned;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -62,11 +64,10 @@ impl KvStore {
         let data = bincode::serialize(&value)
             .map_err(|e| Error::Serialize(format!("failed to serialize value: {}", e)))?;
 
-        let mut cache = self.cache.write().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "failed to acquire write lock",
-            ))
-        })?;
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire write lock")))?;
 
         cache.put(key.to_string(), data, ttl);
         Ok(())
@@ -76,11 +77,10 @@ impl KvStore {
     /// - `key`: 键
     /// - 返回: 实现 Deserialize 的值
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<T> {
-        let cache = self.cache.read().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "failed to acquire read lock",
-            ))
-        })?;
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
 
         let data = cache.get(key)?;
         let value = bincode::deserialize(&data)
@@ -91,22 +91,20 @@ impl KvStore {
 
     /// 删除数据
     pub fn delete(&self, key: &str) -> Result<()> {
-        let mut cache = self.cache.write().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "failed to acquire write lock",
-            ))
-        })?;
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire write lock")))?;
 
         cache.delete(key)
     }
 
     /// 列出所有键值对
     pub fn list<T: DeserializeOwned>(&self) -> Result<Vec<(String, T)>> {
-        let cache = self.cache.read().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "failed to acquire read lock",
-            ))
-        })?;
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
 
         let items = cache.list();
         let mut result = Vec::new();
@@ -122,22 +120,20 @@ impl KvStore {
 
     /// 手动保存到文件
     pub fn save(&self) -> Result<()> {
-        let cache = self.cache.read().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "failed to acquire read lock",
-            ))
-        })?;
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
 
         save_to_file(&self.path, cache.store())
     }
 
     /// 设置条目过期
     pub fn expire(&self, key: &str, ttl: u64) -> Result<()> {
-        let mut cache = self.cache.write().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "failed to acquire write lock",
-            ))
-        })?;
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire write lock")))?;
 
         cache.expire(key, ttl)
     }
@@ -148,16 +144,86 @@ impl KvStore {
         cache.contains_key(key)
     }
 
-    /// 清理过期数据
-    pub fn cleanup(&self) -> Result<()> {
-        let mut cache = self.cache.write().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "failed to acquire write lock",
-            ))
-        })?;
+    /// 清理过期数据，返回移除数量
+    pub fn cleanup(&self) -> Result<usize> {
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire write lock")))?;
 
-        cache.cleanup();
-        Ok(())
+        Ok(cache.cleanup())
+    }
+
+    /// 开始事务
+    ///
+    /// 获取写锁并返回事务句柄。事务内所有操作先缓冲，
+    /// commit 时原子应用。未 commit 就 drop 时自动回滚。
+    pub fn begin(&self) -> Transaction<'_> {
+        let guard = self.cache.write().expect("lock poisoned");
+        Transaction::new(guard)
+    }
+
+    /// 设置最大容量。超出容量时按 LRU 淘汰。
+    /// 返回淘汰的条目数量。
+    pub fn set_capacity(&self, capacity: Option<usize>) -> Result<usize> {
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire write lock")))?;
+
+        Ok(cache.set_capacity(capacity))
+    }
+
+    /// 获取当前最大容量
+    pub fn get_capacity(&self) -> Result<Option<usize>> {
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
+
+        Ok(cache.get_capacity())
+    }
+
+    /// 获取所有未过期的键名
+    pub fn keys(&self) -> Result<Vec<String>> {
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
+
+        Ok(cache.keys())
+    }
+
+    /// 获取有效条目数量
+    pub fn len(&self) -> Result<usize> {
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
+
+        Ok(cache.len())
+    }
+
+    /// 是否为空（无有效条目）
+    pub fn is_empty(&self) -> Result<bool> {
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
+
+        Ok(cache.is_empty())
+    }
+
+    /// 获取数据库统计信息
+    pub fn info(&self) -> Result<StoreInfo> {
+        let cache = self
+            .cache
+            .read()
+            .map_err(|_| Error::Io(std::io::Error::other("failed to acquire read lock")))?;
+
+        let mut info = cache.info();
+        info.file_path = self.path.clone();
+        Ok(info)
     }
 }
 
@@ -274,5 +340,138 @@ mod tests {
             let value: i32 = db.get(&format!("key{}", i)).unwrap();
             assert_eq!(value, i);
         }
+    }
+
+    #[test]
+    fn test_keys_and_len() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        db.put("a", 1, None).unwrap();
+        db.put("b", 2, None).unwrap();
+        db.put("c", 3, None).unwrap();
+
+        assert_eq!(db.len().unwrap(), 3);
+        let mut keys = db.keys().unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_info() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        db.put("k", "v", None).unwrap();
+
+        let info = db.info().unwrap();
+        assert_eq!(info.key_count, 1);
+        assert_eq!(info.capacity, None);
+        assert!(info.file_path.contains("db.bin"));
+    }
+
+    #[test]
+    fn test_lru_capacity() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        db.set_capacity(Some(2)).unwrap();
+
+        db.put("a", 1, None).unwrap();
+        db.put("b", 2, None).unwrap();
+        db.put("c", 3, None).unwrap(); // 淘汰 a
+
+        assert!(db.get::<i32>("a").is_err());
+        assert_eq!(db.get::<i32>("b").unwrap(), 2);
+        assert_eq!(db.get::<i32>("c").unwrap(), 3);
+        assert_eq!(db.len().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_transaction_commit() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        {
+            let mut txn = db.begin();
+            txn.put("tx_key", "tx_value", None).unwrap();
+            txn.put("tx_num", 42, None).unwrap();
+            txn.commit().unwrap();
+        }
+
+        assert_eq!(db.get::<String>("tx_key").unwrap(), "tx_value");
+        assert_eq!(db.get::<i32>("tx_num").unwrap(), 42);
+    }
+
+    #[test]
+    fn test_transaction_rollback() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        db.put("existing", "old_value", None).unwrap();
+
+        {
+            let mut txn = db.begin();
+            txn.put("existing", "new_value", None).unwrap();
+            txn.put("temp_key", "temp", None).unwrap();
+            txn.rollback();
+        }
+
+        assert_eq!(db.get::<String>("existing").unwrap(), "old_value");
+        assert!(db.get::<String>("temp_key").is_err());
+    }
+
+    #[test]
+    fn test_transaction_read_your_writes() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        {
+            let mut txn = db.begin();
+            txn.put("k", "hello", None).unwrap();
+            // 在事务内应能读到
+            let val: String = txn.get("k").unwrap();
+            assert_eq!(val, "hello");
+            txn.commit().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_transaction_drop_rollback() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        {
+            let mut txn = db.begin();
+            txn.put("will_disappear", "gone", None).unwrap();
+            // 不 commit，drop 时自动回滚
+        }
+
+        assert!(db.get::<String>("will_disappear").is_err());
+    }
+
+    #[test]
+    fn test_cleanup_returns_count() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("db.bin");
+
+        let db = KvStore::new(&path).unwrap();
+        db.put("k1", "v1", None).unwrap();
+        db.put("k2", "v2", Some(1)).unwrap();
+
+        // 等待过期
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        let removed = db.cleanup().unwrap();
+        assert_eq!(removed, 1);
+        assert!(db.contains_key("k1"));
+        assert!(!db.contains_key("k2"));
     }
 }

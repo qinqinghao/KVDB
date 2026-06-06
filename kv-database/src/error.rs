@@ -13,6 +13,10 @@ pub enum Error {
     KeyNotFound(String),
     /// 无效路径
     InvalidPath(String),
+    /// 服务器错误
+    Server(String),
+    /// 事务执行失败
+    TransactionFailed(String),
 }
 
 impl fmt::Display for Error {
@@ -22,6 +26,8 @@ impl fmt::Display for Error {
             Error::Serialize(e) => write!(f, "Serialize error: {}", e),
             Error::KeyNotFound(k) => write!(f, "key not found: {}", k),
             Error::InvalidPath(p) => write!(f, "invalid path: {}", p),
+            Error::Server(msg) => write!(f, "server error: {}", msg),
+            Error::TransactionFailed(msg) => write!(f, "transaction failed: {}", msg),
         }
     }
 }
